@@ -3,3 +3,7 @@
 ################################################################################
 
 /test/MSVC/.vs/ConsoleApplication3/v15
+/test/MSVC/x64/Debug
+/test/MSVC/x64/Release
+/test/MSVC/Debug
+/test/MSVC/Release
