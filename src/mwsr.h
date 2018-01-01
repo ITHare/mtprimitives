@@ -651,8 +651,8 @@ private:
 };
 
 //*** MWSRQueue ***//
-std::atomic<int> dbgPushCount = 0;
-std::atomic<int> dbgPopCount = 0;
+//std::atomic<int> dbgPushCount = { 0 };
+//std::atomic<int> dbgPopCount = { 0 };
 
 template<class QueueItem>
 class MWSRQueue {
@@ -668,7 +668,7 @@ class MWSRQueue {
 	: entrance( EntranceReactorData(ExitReactorData::EntranceFirstToWrite, ExitReactorData::EntranceLastToWrite).getCasData() ) {
 	}
 	void push(QueueItem&& item) {
-		dbgPushCount++;
+		//dbgPushCount++;
 		//std::cout << "push():" << item.value() << std::endl;
 		EntranceReactorHandle ent(entrance);
 		std::pair<bool,uint64_t> ok_id = ent.allocateNextID();
@@ -684,7 +684,7 @@ class MWSRQueue {
 			lockedReader.unlock();
 	}
 	QueueItem pop() {
-		dbgPopCount++;
+		//dbgPopCount++;
 		while(true) {
 			ExitReactorHandle ex(exit);
 			std::pair<bool,uint64_t> ok_id = ex.startRead();
