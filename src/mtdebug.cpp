@@ -20,7 +20,7 @@ namespace ithare {
 				for (size_t i = mtDbgLogBufOffset + mtDbgLogBufSize; i >= mtDbgLogBufOffset + mtDbgLogBufSize - lastN; --i) {
 					size_t realOffset = i & 0x3FF;
 					uint64_t entry = mtDbgLogBuf[realOffset];
-					fprintf(f, "%02x: % 8x\n", uint32_t(entry >> 32), uint32_t(entry));
+					fprintf(f, "%02x: %8x\n", uint32_t(entry >> 32), uint32_t(entry));
 				}
 				fclose(f);
 			}

@@ -8,3 +8,4 @@
 /test/MSVC/Debug
 /test/MSVC/Release
 /test/Clang/mwsr
+/test/Clang/test/Clang/dbgLog.txt
