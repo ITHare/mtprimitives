@@ -31,7 +31,7 @@ struct QueueItem {
 MWSRQueue<QueueItem> q;
 
 #define RDLOAD 0
-#define NWR 2
+#define NWR 1
 #define WRWAIT 0
 #define NITER 1000000
 #define PRINTEVERY 1000000
@@ -48,7 +48,7 @@ void fake_load(size_t x) {
 }
 
 void pusher(int id) {
-	for (int i = 0; i<NITER; ++i) {
+	for (int i = 0; i<NITER/NWR; ++i) {
 		std::this_thread::sleep_for( std::chrono::microseconds(WRWAIT)); 
 		if (i%PRINTEVERY == 0)
 			printf("th=%d: push(%d)\n", id, i);
@@ -79,7 +79,7 @@ int main() {
 	}
 
 	Benchmark bm;
-	for (int i = 0; i<NITER*NWR; ++i) {
+	for (int i = 0; i<(NITER/NWR)*NWR; ++i) {
 		QueueItem qq = q.pop();
 		if (i%PRINTEVERY == 0)
 			printf("%d pop(): %d (th=%d)\n", i, qq.i, qq.th);
@@ -96,7 +96,7 @@ int main() {
 	printf("fakeResult=%d\n", int(size_t(fakeResult)));
 	printf("PUSH unlocked/locked=%d/%d POP unlocked/locked=%d/%d\n", int(size_t(dbgPushUnlockedCount)), int(size_t(dbgPushLockedCount)),int(size_t(dbgPopUnlockedCount)),int(size_t(dbgPopLockedCount)));
 	printf("CAS ok=%d CAS retry=%d\n", int(size_t(dbgCasOkCount)), int(size_t(dbgCasRetryCount)));
-	printf("Took %d microseconds\n", us);
+	printf("Took %d microseconds, %g microsecond/(push+pop)\n", us, double(us)/double(NITER));
 	//printDbgLog(0);
 	return 0;
 }

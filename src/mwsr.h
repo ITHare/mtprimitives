@@ -591,9 +591,9 @@ private:
 
 public:
 	void lockAndWait(uint64_t itemId) {
-		dbgLog(0x11, itemId);
+		//dbgLog(0x11, itemId);
 		std::unique_lock<std::mutex> lock(mx);
-		dbgLog(0x12, itemId);
+		//dbgLog(0x12, itemId);
 		lockedThreadsList_data.itemId = itemId;
 		insertSorted(&lockedThreadsList_data);
 		while (itemId >= unlockUpTo){
@@ -603,9 +603,9 @@ public:
 	}
 
 	void unlockAllUpTo(uint64_t id) {
-		dbgLog(0x21, id);
+		//dbgLog(0x21, id);
 		std::unique_lock<std::mutex> lock(mx);
-		dbgLog(0x22, id);
+		//dbgLog(0x22, id);
 		assert(id >= unlockUpTo);
 		unlockUpTo = id;
 		for (LockedThreadsListLockItem* it = first; it != nullptr; it=it->next) {
