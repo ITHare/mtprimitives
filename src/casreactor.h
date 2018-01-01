@@ -68,11 +68,13 @@ namespace ithare {
 			}
 			template<class ReturnType, class Func>
 			void react_of_void(ReturnType& ret, Func&&f) {//ugly; wish I could derive both ReturnType and param types from Func() itself
-														  //last_read.data = cas->load();
+				//last_read.data = cas->load();
 				while (true) {
 					ReactorData new_data = last_read;
-					ret = f(new_data);//MODIFIES new_data(!)
-
+					bool earlyExit = false;
+					ret = f(earlyExit, new_data);//MODIFIES new_data(!)
+					if (earlyExit)
+						return;
 					bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
 					if (ok) {
 #ifdef ITHARE_MTPRIMITIVES_STATCOUNTS
@@ -90,8 +92,10 @@ namespace ithare {
 			void react_of_uint64_t(ReturnType& ret, uint64_t param, Func&&f) {//ugly; wish I could derive both ReturnType and param types from Func() itself
 				while (true) {
 					ReactorData new_data = last_read;
-					ret = f(new_data, param);//MODIFIES new_data(!)
-
+					bool earlyExit = false;
+					ret = f(earlyExit, new_data, param);//MODIFIES new_data(!)
+					if (earlyExit)
+						return;
 					bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
 					if (ok) {
 #ifdef ITHARE_MTPRIMITIVES_STATCOUNTS

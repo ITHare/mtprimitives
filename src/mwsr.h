@@ -13,13 +13,15 @@
 
 #define ITHARE_MTPRIMITIVES_GENERIC_CAS_HANDLE
 //  Jury is still out whether generic approach is better 
-//    performance-wise they SEEM to be equal at least under MSVC, and readability-wise I'm _leaning_ towards GENERIC_CAS_HANDLE, 
+//    performance-wise they SEEM to be equal at least under MSVC, and readability-wise I'm _leaning_ towards ITHARE_MTPRIMITIVES_GENERIC_CAS_HANDLE, 
 //    but there are still potential issues which can reverse it.
 
 namespace ithare {
 	namespace mtprimitives {
 
 		namespace MWSRQueueFC_helpers {
+			constexpr size_t QueueSize = 64;
+
 			//helpers for MWSRQueueFC
 			//*** mask_*() functions need to represent a coherent view, but nobody really cares about exact bit numbers outside of them ***//
 			bool mask_getbit(uint64_t mask, int pos) {
@@ -46,7 +48,8 @@ namespace ithare {
 
 			//*** EntranceReactor and ExitReactor ***//
 
-			struct EntranceReactorData {
+			struct EntranceReactorData {//according to "CAS Reactor" doctrine, EntranceReactorData is THREAD-AGNOSTIC!
+										//  All the thread sync belongs to EntranceReactorHandle
 			private:
 				//kinda-fields:
 				//  firstIDToWrite (up to 64 bits, current implementation: 64 bits)
@@ -127,10 +130,10 @@ namespace ithare {
 				EntranceReactorHandle(MT_CAS& cas_)
 					: CasReactorHandle<EntranceReactorData>(cas_) {
 				}
-#ifdef GENERIC_CAS_HANDLE
+#ifdef ITHARE_MTPRIMITIVES_GENERIC_CAS_HANDLE
 				std::pair<bool, uint64_t> allocateNextID() {
 					std::pair<bool, uint64_t> ret;
-					react_of_void(ret, [](EntranceReactorData& new_data) -> std::pair<bool, uint64_t> {
+					react_of_void(ret, [](bool& earlyExit, EntranceReactorData& new_data) -> std::pair<bool, uint64_t> {
 						uint64_t firstW = new_data.getFirstIDToWrite();
 						//MAY be >= lastIDToWrite()
 
@@ -156,7 +159,7 @@ namespace ithare {
 				}
 				void unlock() {
 					int dummy;
-					react_of_void(dummy, [](EntranceReactorData& new_data) {
+					react_of_void(dummy, [](bool& earlyExit,EntranceReactorData& new_data) {
 						uint32_t lockedCount = new_data.getLockedThreadCount();
 						uint32_t newLockedCount = lockedCount - 1;
 						//mtDbgLog(0x111, lockedCount);
@@ -168,7 +171,7 @@ namespace ithare {
 				bool moveLastToWrite(uint64_t newLastW) {
 					//returns 'shouldUnlock'
 					bool ret;
-					react_of_uint64_t(ret, newLastW, [](EntranceReactorData& new_data, uint64_t newLastW) -> bool {
+					react_of_uint64_t(ret, newLastW, [](bool& earlyExit,EntranceReactorData& new_data, uint64_t newLastW) -> bool {
 						uint64_t lastW = new_data.getLastIDToWrite();
 						assert(lastW <= newLastW);
 
@@ -272,11 +275,10 @@ namespace ithare {
 #endif
 			};
 
-			template<size_t QueueSize>
 			class ExitReactorHandle;
 
-			template<size_t QueueSize>
-			class ExitReactorData {
+			class ExitReactorData {//according to "CAS Reactor" doctrine, ExitReactorData is THREAD-AGNOSTIC!
+								   //  All the thread sync belongs to ExitReactorHandle
 			private:
 				alignas(MT_CAS_SIZE)MT_CAS_DATA data;
 				//kinda-fields:
@@ -295,7 +297,8 @@ namespace ithare {
 					setFirstIDToRead(EntranceFirstToWrite);
 				}
 
-				friend class ExitReactorHandle<QueueSize>;
+				friend class ExitReactorHandle;
+				friend class CasReactorHandle<ExitReactorData>;
 			private:
 				uint64_t getFirstIDToRead() {
 					return data.hi & 0x7FFF'FFFFLL;
@@ -321,28 +324,85 @@ namespace ithare {
 				}
 			};
 
-			template<size_t QueueSize>
-			class ExitReactorHandle {
+			class ExitReactorHandle : public CasReactorHandle<ExitReactorData> {
 #ifndef ITHARE_MTPRIMITIVES_CAS_DUMMY
-				static_assert(sizeof(ExitReactorData<QueueSize>) == MT_CAS_SIZE, "size of ReactorData MUST match CAS_SIZE");
+				static_assert(sizeof(ExitReactorData) == MT_CAS_SIZE, "size of ReactorData MUST match CAS_SIZE");
 #endif
 
 			private:
-				MT_CAS * cas;
-				ExitReactorData<QueueSize> last_read;
+				//MT_CAS * cas;
+				//ExitReactorData last_read;
 
 			public:
 				ExitReactorHandle(MT_CAS& cas_)
-					: cas(&cas_) {
-					last_read.data = cas->load();
+					: CasReactorHandle<ExitReactorData>(cas_) {
 				}
-				/*---
-				 * void reread() {
-					cas_load_acquire( &last_read, data );
-				}*/
+
+#ifdef ITHARE_MTPRIMITIVES_GENERIC_CAS_HANDLE
+				bool writeCompleted(uint64_t id) {
+					bool ret0;
+					react_of_uint64_t(ret0, id, [](bool& earlyExit,ExitReactorData& new_data, uint64_t id) -> bool {
+						uint64_t firstR = new_data.getFirstIDToRead();
+						assert(id >= firstR);
+						assert(id < firstR + QueueSize);
+
+						uint64_t mask = new_data.getCompletedWritesMask();
+						assert(!mask_getbit(mask, int(id - firstR)));
+						uint64_t newMask = mask_setbit(mask, int(id - firstR));
+						new_data.setCompletedWritesMask(newMask);
+
+						bool ret = false;
+						if (new_data.getReaderIsLocked()) {
+							new_data.setReaderIsUnlocked();
+							ret = true;
+						}
+						return ret;
+					});
+					return ret0;
+				}
+				std::pair<bool, uint64_t> startRead() {
+					std::pair<bool, uint64_t> ret;
+					react_of_void(ret, [](bool& earlyExit, ExitReactorData& new_data) -> std::pair<bool, uint64_t> {
+						assert(!new_data.getReaderIsLocked());
+						uint64_t mask = new_data.getCompletedWritesMask();
+
+						if (mask_getbit(mask, 0)) {
+							earlyExit = true;//yes, leaving without modifying state
+							return std::pair<bool, uint64_t>(true, new_data.getFirstIDToRead());
+						}
+						else {
+							new_data.setReaderIsLocked();
+						}
+
+						return std::pair<bool, uint64_t>(false, 0);
+					});
+					return ret;
+				}
+				uint64_t readCompleted(uint64_t id) {
+					uint64_t ret0;
+					react_of_uint64_t(ret0, id, [](bool& earlyExit, ExitReactorData& new_data, uint64_t id) -> uint64_t {
+						//returns newLastW
+						uint64_t mask = new_data.getCompletedWritesMask();
+						assert(mask_getbit(mask, 0));
+
+						uint64_t firstR = new_data.getFirstIDToRead();
+						uint64_t newFirstR = firstR + 1;
+						assert(newFirstR > firstR);//overflow check
+						new_data.setFirstIDToRead(newFirstR);
+
+						uint64_t newMask = mask_shiftoutbit0(mask);
+						new_data.setCompletedWritesMask(newMask);
+						uint64_t newLastW = newFirstR + QueueSize;
+
+						return newLastW;
+						});
+					return ret0;
+				}
+
+#else
 				bool writeCompleted(uint64_t id) {
 					while (true) {
-						ExitReactorData<QueueSize> new_data = last_read;
+						ExitReactorData new_data = last_read;
 						uint64_t firstR = new_data.getFirstIDToRead();
 						assert(id >= firstR);
 						assert(id < firstR + QueueSize);
@@ -367,12 +427,11 @@ namespace ithare {
 						//	continue;
 					}//while(true)		
 				}
-
 				std::pair<bool, uint64_t> startRead() {
 					//returns tuple (rdok,rdID)
 					//IMPORTANT: it is HIGHLY DESIRABLE to call startRead() close time-wise to constructor or reread()
 					while (true) {
-						ExitReactorData<QueueSize> new_data = last_read;
+						ExitReactorData new_data = last_read;
 						assert(!new_data.getReaderIsLocked());
 						uint64_t mask = new_data.getCompletedWritesMask();
 
@@ -391,11 +450,10 @@ namespace ithare {
 						//	continue;
 					}
 				}
-
 				uint64_t readCompleted(uint64_t id) {
 					//returns newLastW
 					while (true) {
-						ExitReactorData<QueueSize> new_data = last_read;
+						ExitReactorData new_data = last_read;
 						uint64_t mask = new_data.getCompletedWritesMask();
 						assert(mask_getbit(mask, 0));
 
@@ -417,6 +475,7 @@ namespace ithare {
 						//	continue;
 					}//while(true)
 				}
+#endif
 			};
 
 			//*** Locking Primitives ***/
@@ -554,8 +613,9 @@ namespace ithare {
 
 		//*** MWSRQueueFC ***//
 
-		template<class QueueItem,size_t QueueSize=64>
+		template<class QueueItem>
 		class MWSRQueueFC {//'FC' stands for 'Flow Control'
+			static constexpr size_t QueueSize = MWSRQueueFC_helpers::QueueSize;
 			static_assert(mt_is_powerof2(QueueSize), "QueueSize MUST be power of 2");//probably should work even if this is violated, 
 																					 //  but will be less efficient
 
@@ -569,8 +629,8 @@ namespace ithare {
 		public:
 			MWSRQueueFC()
 				: entrance(MWSRQueueFC_helpers::EntranceReactorData(
-					MWSRQueueFC_helpers::ExitReactorData<QueueSize>::EntranceFirstToWrite,
-					MWSRQueueFC_helpers::ExitReactorData<QueueSize>::EntranceLastToWrite).getCasData()) {
+					MWSRQueueFC_helpers::ExitReactorData::EntranceFirstToWrite,
+					MWSRQueueFC_helpers::ExitReactorData::EntranceLastToWrite).getCasData()) {
 			}
 			void push(QueueItem&& item) {
 				MWSRQueueFC_helpers::EntranceReactorHandle ent(entrance);
@@ -589,14 +649,14 @@ namespace ithare {
 				}
 				size_t idx = index(ok_id.second);
 				items[idx] = std::move(item);
-				MWSRQueueFC_helpers::ExitReactorHandle<QueueSize> ex(exit);
+				MWSRQueueFC_helpers::ExitReactorHandle ex(exit);
 				bool unlock = ex.writeCompleted(ok_id.second);
 				if (unlock)
 					lockedReader.unlock();
 			}
 			QueueItem pop() {
 				while (true) {
-					MWSRQueueFC_helpers::ExitReactorHandle<QueueSize> ex(exit);
+					MWSRQueueFC_helpers::ExitReactorHandle ex(exit);
 					std::pair<bool, uint64_t> ok_id = ex.startRead();
 					if (!ok_id.first) {
 #ifdef ITHARE_MTPRIMITIVES_STATCOUNTS
