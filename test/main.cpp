@@ -1,7 +1,10 @@
-﻿#include <stdio.h>//NOT std::cout as it behaves weird in MT
+﻿
+#include <stdio.h>//NOT std::cout as it behaves weird in MT
 #include <thread>
 #include <chrono>
 #include "../src/mwsr.h"
+
+using namespace ithare::mtprimitives;
 
 class Benchmark {
 	std::chrono::high_resolution_clock::time_point start;
@@ -97,7 +100,7 @@ int main() {
 	printf("PUSH unlocked/locked=%d/%d POP unlocked/locked=%d/%d\n", int(size_t(dbgPushUnlockedCount)), int(size_t(dbgPushLockedCount)),int(size_t(dbgPopUnlockedCount)),int(size_t(dbgPopLockedCount)));
 	printf("CAS ok=%d CAS retry=%d\n", int(size_t(dbgCasOkCount)), int(size_t(dbgCasRetryCount)));
 	printf("Took %d microseconds, %g microsecond/(push+pop)\n", us, double(us)/double(NITER));
-	//printDbgLog(0);
+	mtPrintDbgLog(100);//to prevent linker from eliminating it
 	return 0;
 }
 
