@@ -4,9 +4,10 @@
 #include <utility>
 #include <atomic>
 #include <condition_variable>
+#include <set>//dbg-only
 
 inline void my_assert_fail() {//to put a breakpoint
-	throw std::exception("assert failed");
+	throw std::exception();
 }
 
 #define assert(expr) \
@@ -14,7 +15,7 @@ inline void my_assert_fail() {//to put a breakpoint
 
 //#include <windows.h>
 uint64_t dbgLogBuf[1024] = {};
-std::atomic<size_t> dbgLogBufOffset = 0;
+std::atomic<size_t> dbgLogBufOffset = { 0 };
 
 inline void dbgLog(uint32_t id, uint64_t param) {
 	uint64_t entry = (uint64_t(id) << 32) | uint32_t(param);
@@ -222,7 +223,7 @@ class EntranceReactorHandle {
 				if( newW >= new_data.getLastIDToWrite() ) {
 					willLock = true;
 					uint32_t lockedCount = new_data.getLockedThreadCount();
-					dbgLog(0x101, lockedCount);
+					//dbgLog(0x101, lockedCount);
 					uint32_t newLockedCount = lockedCount + 1;
 					assert(newLockedCount > lockedCount);//overflow check
 					new_data.setLockedThreadCount( newLockedCount );
@@ -235,8 +236,8 @@ class EntranceReactorHandle {
 				}
 				//else
 				//	continue;
-				if(willLock)
-					dbgLog(0x102, 0);
+				//if(willLock)
+				//	dbgLog(0x102, 0);
 			}//while(true)
 		}//allocateNextID()
 		void unlock() {
@@ -244,7 +245,7 @@ class EntranceReactorHandle {
 				EntranceReactorData new_data = last_read;
 				uint32_t lockedCount = new_data.getLockedThreadCount();
 				uint32_t newLockedCount = lockedCount - 1;
-				dbgLog(0x111, lockedCount);
+				//dbgLog(0x111, lockedCount);
 				assert(newLockedCount < lockedCount);//underflow check
 				new_data.setLockedThreadCount(newLockedCount);
 				bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
@@ -254,7 +255,7 @@ class EntranceReactorHandle {
 				}
 				//else
 				//	continue;
-				dbgLog(0x112, 0);
+				//dbgLog(0x112, 0);
 			}
 		}
 		bool moveLastToWrite( uint64_t newLastW ) {
@@ -567,26 +568,101 @@ class LockedThreadsList {
 	}
 };*/
 
+struct LockedThreadsListLockItem {
+	uint64_t itemId;//item we're waiting for
+	std::mutex mx;
+	std::condition_variable cv;
+	LockedThreadsListLockItem* next;
+};
+thread_local LockedThreadsListLockItem lockedThreadsList_data;//moved outside of LockedThreadsList to avoid strange reported bugs with thread_local members 
+
+
 class LockedThreadsList {
 	//along the lines of LockedSingleThread
 private:
 	uint64_t unlockUpTo = 0;
 	std::mutex mx;
-	std::condition_variable cv;
+	//std::condition_variable cv;
+	LockedThreadsListLockItem* first;
 
 public:
 	void lockAndWait(uint64_t itemId) {
+		dbgLog(0x11, itemId);
 		std::unique_lock<std::mutex> lock(mx);
-		while (itemId >= unlockUpTo) {
-			cv.wait(lock);
+		dbgLog(0x12, itemId);
+		lockedThreadsList_data.itemId = itemId;
+		insertSorted(&lockedThreadsList_data);
+		while (itemId >= unlockUpTo){
+			lockedThreadsList_data.cv.wait(lock);
 		}
+		removeFromList(&lockedThreadsList_data);
 	}
 
 	void unlockAllUpTo(uint64_t id) {
+		dbgLog(0x21, id);
 		std::unique_lock<std::mutex> lock(mx);
+		dbgLog(0x22, id);
+		assert(id >= unlockUpTo);
 		unlockUpTo = id;
-		lock.unlock();
-		cv.notify_all();
+		for (LockedThreadsListLockItem* it = first; it != nullptr; it=it->next) {
+			if (it->itemId < unlockUpTo) {
+				it->cv.notify_one();
+			}
+		}
+	}
+
+private:
+	void insertSorted(LockedThreadsListLockItem* item) {
+		LockedThreadsListLockItem* prev = nullptr;
+		for (LockedThreadsListLockItem* it = first; it != nullptr; prev = it, it = it->next) {
+			assert(it != item);
+			assert(it->itemId != item->itemId);
+			if (item->itemId < it->itemId) {
+				insertBetweenHelper(item, prev, it);
+				return;
+			}
+		}//for(item)
+		//if not handled yet...
+		insertBetweenHelper(item, prev, nullptr);
+	}
+	
+	void insertBetweenHelper(LockedThreadsListLockItem* it, LockedThreadsListLockItem* prev, LockedThreadsListLockItem* item) {
+		//dbgNoLoop();
+		if (prev == nullptr) {
+			assert(item == first);
+			it->next = first;
+			first = it;
+		}
+		else {
+			assert(item == prev->next);
+			it->next = item;
+			prev->next = it;
+		}
+		//dbgNoLoop();
+	}
+
+	void removeFromList(LockedThreadsListLockItem* item) {
+		assert(first != nullptr);
+		LockedThreadsListLockItem* prev = nullptr;
+		for (LockedThreadsListLockItem* it = first;; it=it->next) {
+			if (it == item) {
+				if (prev == nullptr)
+					first = it->next;
+				else
+					prev->next = it->next;
+				return;
+			}
+			prev = it;
+		}
+		//dbgNoLoop();
+	}
+	void dbgNoLoop() {
+		std::set<LockedThreadsListLockItem*> all;
+		for (LockedThreadsListLockItem* it = first; it != nullptr ; it = it->next) {
+			auto found = all.find(it);
+			assert(found == all.end());
+			all.insert(it);
+		}
 	}
 };
 
