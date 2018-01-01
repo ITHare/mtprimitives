@@ -7,3 +7,4 @@
 /test/MSVC/x64/Release
 /test/MSVC/Debug
 /test/MSVC/Release
+/test/Clang/mwsr
