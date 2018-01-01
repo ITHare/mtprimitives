@@ -441,117 +441,6 @@ class LockedSingleThread {
 	}
 };
 
-/*
-struct LockedThreadsListLockItem {
-	uint64_t itemId;//item we're waiting for
-	std::mutex mx;
-	std::condition_variable cv;
-	int lockCount = 0;//MAY be both >0 and <0
-	LockedThreadsListLockItem* next;
-};
-thread_local LockedThreadsListLockItem lockedThreadsList_data;//moved outside of LockedThreadsList to avoid strange reported bugs with thread_local members 
-
-class LockedThreadsLockItemList {
-	private:
-	std::mutex mx;
-	LockedThreadsListLockItem* first = nullptr;
-	
-	public:
-	LockedThreadsListLockItem* extractFirstIf(uint64_t id) {
-		//std::cout << "extractFirstIf():" << id << std::endl;
-		std::unique_lock<std::mutex> lock(mx);
-		if (first == nullptr)
-			return nullptr;
-		//std::cout << "extractFirstIf(): first=" << first->itemId << std::endl;
-		if (id < first->itemId)
-			return nullptr;
-		LockedThreadsListLockItem* item = first;
-		first = item->next;
-		//std::cout << "extractFirstIf(): extracted:" << item->itemId << std::endl;
-		return item;
-	}
-	void insertSorted(LockedThreadsListLockItem* it) {
-		//std::cout << "insertSorted():" << it->itemId << std::endl;
-		std::unique_lock<std::mutex> lock(mx);
-		dbgLog(0x31, it->itemId);
-		LockedThreadsListLockItem* prev=nullptr;
-		bool handled = false;
-		for(LockedThreadsListLockItem* item=first; item != nullptr ; prev=item, item = item->next) {
-			if(item->itemId > it->itemId) {
-				handled = true;
-				insertBetweenHelper(it,prev,item);
-				break;//for(item)
-			}
-		}//for(item)
-		if(!handled)
-			insertBetweenHelper(it,prev,nullptr);
-	}
-
-	private:
-	void insertBetweenHelper(LockedThreadsListLockItem* it, LockedThreadsListLockItem* prev, LockedThreadsListLockItem* item) {
-		if(prev==nullptr) {
-			assert(item==first);
-			lockedThreadsList_data.next = first;
-			first = it;
-		}
-		else {
-			assert(item==prev->next);
-			it->next = item;
-			prev->next = it;
-		}
-	}
-};
-
-std::atomic<uint64_t> dbgLastUnlockAllUpTo = 0;
-std::atomic<uint64_t> dbgLastLockAndWait = 0;
-std::atomic<uint64_t> dbgLockCountInc = 0;
-std::atomic<uint64_t> dbgLockCountDec = 0;
-
-class LockedThreadsList {
-	//along the lines of LockedSingleThread
-	private:
-	LockedThreadsLockItemList lockedList;
-	
-	public:
-	void lockAndWait(uint64_t itemId) {
-		dbgLastLockAndWait = itemId;
-		lockedThreadsList_data.itemId = itemId;
-
-		dbgLog(0x11, itemId);
-		lockedList.insertSorted(&lockedThreadsList_data);
-		dbgLog(0x12, itemId);
-
-		std::unique_lock<std::mutex> lock(lockedThreadsList_data.mx);
-		assert(lockedThreadsList_data.lockCount == -1 || lockedThreadsList_data.lockCount == 0);
-		lockedThreadsList_data.lockCount++;
-		dbgLog(0x14, lockedThreadsList_data.lockCount);
-		dbgLockCountInc++;
-		while(lockedThreadsList_data.lockCount>0) {
-			lockedThreadsList_data.cv.wait(lock);
-		}
-	}
-	void unlockAllUpTo(uint64_t id) {
-		dbgLog(0x21, id);
-		dbgLastUnlockAllUpTo = id;
-		while (true) {
-			LockedThreadsListLockItem* item = lockedList.extractFirstIf(id);
-			if (item == nullptr) {
-				//dbgLog(0x22, id);
-				return;
-			}
-			dbgLog(0x23, id);
-			assert(id >= item->itemId);
-
-			std::unique_lock<std::mutex> lock(item->mx);
-			item->lockCount--;
-			dbgLockCountDec++;
-			dbgLog(0x24, item->lockCount);
-			lock.unlock();
-			item->cv.notify_one();
-		}
-	}
-};*/
-
 struct LockedThreadsListLockItem {
 	uint64_t itemId;//item we're waiting for
 	std::mutex mx;
@@ -559,7 +448,6 @@ struct LockedThreadsListLockItem {
 	LockedThreadsListLockItem* next;
 };
 thread_local LockedThreadsListLockItem lockedThreadsList_data;//moved outside of LockedThreadsList to avoid strange reported bugs with thread_local members 
-
 
 class LockedThreadsList {
 	//along the lines of LockedSingleThread
