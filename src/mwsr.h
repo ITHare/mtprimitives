@@ -40,24 +40,6 @@ constexpr inline bool is_powerof2(size_t v) {//from https://stackoverflow.com/qu
     return v && ((v & (v - 1)) == 0);
 }
 
-/************************/
- 
-//QueueSize and QueueItem to be made template parameters of MWSRQueue 
-const size_t QueueSize = 64;// SHOULD be power of 2 for performance reasons
-static_assert(is_powerof2(QueueSize), "QueueSize MUST be power of 2");//probably should work even if this is violated, 
-                                                                      //  but will be less efficient
-struct QueueItem {
-	int i;
-
-	QueueItem() {
-		i = 0;
-	}
-	QueueItem(int i_) : i(i_) {}
-	int value() {
-		return i;
-	}
-};
-
 /*************************/
 
 //*** CAS functions - MAY BE platform-dependent ***//
@@ -102,6 +84,8 @@ class CAS {
 
 
 //*** mask_*() functions need to represent a coherent view, but nobody really cares about exact bit numbers outside of them ***//
+
+constexpr size_t QueueSize = 64;// SHOULD be power of 2 for performance reasons
 
 bool mask_getbit(uint64_t mask,int pos) {
 	assert( pos >= 0 );
@@ -670,6 +654,7 @@ private:
 std::atomic<int> dbgPushCount = 0;
 std::atomic<int> dbgPopCount = 0;
 
+template<class QueueItem>
 class MWSRQueue {
 	private:
 	QueueItem items[QueueSize];
