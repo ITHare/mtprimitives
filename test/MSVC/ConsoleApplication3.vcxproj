@@ -152,6 +152,7 @@
     <ClInclude Include="..\..\src\mwsr.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\src\casreactor.cpp" />
     <ClCompile Include="..\..\src\mtdebug.cpp" />
     <ClCompile Include="..\main.cpp" />
   </ItemGroup>

@@ -1,12 +1,15 @@
 #ifndef ithare_mtprimitives_casreactor_h_included
 #define ithare_mtprimitives_casreactor_h_included
 
+#include <atomic>
+#include "mtcommon.h"
+
 namespace ithare {
 	namespace mtprimitives {
 
-		constexpr size_t CAS_SIZE = 16;//x64 starting from Core Duo
+		constexpr size_t MT_CAS_SIZE = 16;//x64 starting from Core Duo
 
-		struct CAS_DATA {
+		struct MT_CAS_DATA {
 			uint64_t lo;
 			uint64_t hi;
 #ifdef ITHARE_MTPRIMITIVES_CAS_DUMMY
@@ -14,27 +17,27 @@ namespace ithare {
 #endif
 		};
 
-		class CAS {
+		class MT_CAS {
 			//wrapper to simplify manual rewriting if it becomes necessary
 		private:
-			std::atomic<CAS_DATA> cas;
+			std::atomic<MT_CAS_DATA> cas;
 
 		public:
-			CAS() {
-				CAS_DATA data;
-				memset(&data, 0, sizeof(CAS_DATA));
+			MT_CAS() {
+				MT_CAS_DATA data;
+				memset(&data, 0, sizeof(MT_CAS_DATA));
 				cas = data;
 			}
-			CAS(CAS_DATA data) {
+			MT_CAS(MT_CAS_DATA data) {
 				cas = data;
 			}
-			CAS_DATA load() {
+			MT_CAS_DATA load() {
 				return cas.load();
 			}
-			bool compare_exchange_weak(CAS_DATA* expected, CAS_DATA desired) {
+			bool compare_exchange_weak(MT_CAS_DATA* expected, MT_CAS_DATA desired) {
 				return cas.compare_exchange_weak(*expected, desired);
 			}
-			bool is_lock_free() const {//if it happens to be NOT lock free but the platform does support CAS of CAS_SIZE - 
+			bool is_lock_free() const {//if it happens to be NOT lock free but the platform does support MT_CAS of MT_CAS_SIZE - 
 									   //	we'll have to use platform-specific stuff 
 #ifndef ITHARE_MTPRIMITIVES_CAS_DUMMY
 				return cas.is_lock_free();
@@ -47,16 +50,18 @@ namespace ithare {
 
 		// Generic CasReactorHandle
 
-		std::atomic<size_t> dbgCasOkCount = { 0 };
-		std::atomic<size_t> dbgCasRetryCount = { 0 };
+#ifdef ITHARE_MTPRIMITIVES_STATCOUNTS
+		extern std::atomic<size_t> mtDbgCasOkCount;
+		extern std::atomic<size_t> mtDbgCasRetryCount;
+#endif
 
 		template<class ReactorData>
 		class CasReactorHandle {
 		protected:
-			CAS * cas;
+			MT_CAS* cas;
 			ReactorData last_read;
 
-			CasReactorHandle(CAS& cas_)
+			CasReactorHandle(MT_CAS& cas_)
 				: cas(&cas_) {
 				last_read.data = cas->load();
 			}
@@ -69,11 +74,15 @@ namespace ithare {
 
 					bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
 					if (ok) {
-						++dbgCasOkCount;
+#ifdef ITHARE_MTPRIMITIVES_STATCOUNTS
+						++mtDbgCasOkCount;
+#endif
 						last_read.data = new_data.data;
 						return;//effectively returning ret
 					}
-					++dbgCasRetryCount;
+#ifdef ITHARE_MTPRIMITIVES_STATCOUNTS
+					++mtDbgCasRetryCount;
+#endif
 				}
 			}
 			template<class ReturnType, class Func>
@@ -84,11 +93,13 @@ namespace ithare {
 
 					bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
 					if (ok) {
-						++dbgCasOkCount;
+						++mtDbgCasOkCount;
 						last_read.data = new_data.data;
 						return;//effectively returning ret
 					}
-					++dbgCasRetryCount;
+#ifdef ITHARE_MTPRIMITIVES_STATCOUNTS
+					++mtDbgCasRetryCount;
+#endif
 				}
 			}
 		};

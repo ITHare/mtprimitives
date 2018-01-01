@@ -31,7 +31,7 @@ struct QueueItem {
 	QueueItem(int th_, int i_) : th(th_), i(i_) {}
 };
 
-MWSRQueue<QueueItem> q;
+MWSRQueueFC<QueueItem> q;
 
 #define RDLOAD 0
 #define NWR 1
@@ -62,8 +62,8 @@ void pusher(int id) {
 
 
 int main() {
-	CAS cas;
-	printf("sizeof(void*)=%d sizeof(CAS)=%d CAS is %s lock free\n", int(sizeof(void*)), int(sizeof(CAS)), cas.is_lock_free() ? "" : " NOT ");
+	MT_CAS cas;
+	printf("sizeof(void*)=%d sizeof(CAS)=%d CAS is %s lock free\n", int(sizeof(void*)), int(sizeof(MT_CAS)), cas.is_lock_free() ? "" : " NOT ");
 
 	/*for (int i = 0; i < 32; ++i) {
 	QueueItem item(i);
@@ -97,8 +97,10 @@ int main() {
 
 	int us = bm.us();
 	printf("fakeResult=%d\n", int(size_t(fakeResult)));
-	printf("PUSH unlocked/locked=%d/%d POP unlocked/locked=%d/%d\n", int(size_t(dbgPushUnlockedCount)), int(size_t(dbgPushLockedCount)),int(size_t(dbgPopUnlockedCount)),int(size_t(dbgPopLockedCount)));
-	printf("CAS ok=%d CAS retry=%d\n", int(size_t(dbgCasOkCount)), int(size_t(dbgCasRetryCount)));
+#ifdef ITHARE_MTPRIMITIVES_STATCOUNTS
+	printf("PUSH unlocked/locked=%d/%d POP unlocked/locked=%d/%d\n", int(size_t(q.dbgPushUnlockedCount)), int(size_t(q.dbgPushLockedCount)),int(size_t(q.dbgPopUnlockedCount)),int(size_t(q.dbgPopLockedCount)));
+	printf("CAS ok=%d CAS retry=%d\n", int(size_t(mtDbgCasOkCount)), int(size_t(mtDbgCasRetryCount)));
+#endif
 	printf("Took %d microseconds, %g microsecond/(push+pop)\n", us, double(us)/double(NITER));
 	mtPrintDbgLog(100);//to prevent linker from eliminating it
 	return 0;
