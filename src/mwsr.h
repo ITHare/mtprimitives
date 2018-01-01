@@ -10,14 +10,19 @@
 //  Jury is still out whether generic approach is better 
 //    performance-wise they SEEM to be equal at least under MSVC, and readability-wise I'm _leaning_ towards GENERIC_CAS_HANDLE, but...
 
+//#define DUMMY //to force non-atomic-based CAS
+
+#ifdef NDEBUG
+#define assert(expr)
+#else
 inline void my_assert_fail() {//to put a breakpoint
 	throw std::exception();
 }
 
 #define assert(expr) \
     if (!(expr)) my_assert_fail();
+#endif
 
-//#include <windows.h>
 uint64_t dbgLogBuf[1024] = {};
 std::atomic<size_t> dbgLogBufOffset = { 0 };
 
@@ -54,6 +59,9 @@ constexpr inline bool is_powerof2(size_t v) {//from https://stackoverflow.com/qu
 struct CAS_DATA {
 	uint64_t lo;
 	uint64_t hi;
+#ifdef DUMMY
+	bool dummy;
+#endif
 };
 #else
 #error
@@ -81,7 +89,12 @@ class CAS {
 	}
 	bool is_lock_free() const {//if it happens to be NOT lock free but the platform does support CAS of CAS_SIZE - 
 							   //	we'll have to use platform-specific stuff 
+#ifndef DUMMY
 		return cas.is_lock_free();
+#else
+		//for whatever reason, with larger sizes above line causes linker error under Clang
+		return false;
+#endif
 	}
 };	
 //static_assert(sizeof(CAS)==CAS_SIZE, "something went badly wrong");
@@ -118,6 +131,9 @@ uint64_t mask_shiftoutbit0(uint64_t mask) {
 
 //*** Generic CasReactorHandle ***//
 
+std::atomic<size_t> dbgCasOkCount = {0};
+std::atomic<size_t> dbgCasRetryCount = {0};
+
 template<class ReactorData>
 class CasReactorHandle {
 protected:
@@ -130,15 +146,18 @@ protected:
 	}
 	template<class ReturnType, class Func>
 	void react_of_void(ReturnType& ret, Func&&f) {//ugly; wish I could derive both ReturnType and param types from Func() itself
+		//last_read.data = cas->load();
 		while (true) {
 			ReactorData new_data = last_read;
 			ret = f(new_data);//MODIFIES new_data(!)
 
 			bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
 			if (ok) {
+				++dbgCasOkCount;
 				last_read.data = new_data.data;
 				return;//effectively returning ret
 			}
+			++dbgCasRetryCount;
 		}
 	}
 	template<class ReturnType, class Func>
@@ -149,9 +168,11 @@ protected:
 
 			bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
 			if (ok) {
+				++dbgCasOkCount;
 				last_read.data = new_data.data;
 				return;//effectively returning ret
 			}
+			++dbgCasRetryCount;
 		}
 	}
 };
@@ -226,7 +247,9 @@ private:
 		}
 };
 
+#ifndef DUMMY
 static_assert( sizeof(EntranceReactorData) == CAS_SIZE, "size of ReactorData MUST match CAS_SIZE" );
+#endif
 
 class EntranceReactorHandle : public CasReactorHandle<EntranceReactorData> {
 	//private:
@@ -315,11 +338,13 @@ class EntranceReactorHandle : public CasReactorHandle<EntranceReactorData> {
 
 				bool ok = cas->compare_exchange_weak( &last_read.data, new_data.data );
 				if (ok) {
+					++dbgCasOkCount;
 					last_read.data = new_data.data;
 					return std::pair<bool, uint64_t>(willLock, firstW);
 				}
 				//else
 				//	continue;
+				++dbgCasRetryCount;
 				//if(willLock)
 				//	dbgLog(0x102, 0);
 			}//while(true)
@@ -334,11 +359,13 @@ class EntranceReactorHandle : public CasReactorHandle<EntranceReactorData> {
 				new_data.setLockedThreadCount(newLockedCount);
 				bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
 				if (ok) {
+					++dbgCasOkCount;
 					last_read.data = new_data.data;
 					return;
 				}
 				//else
 				//	continue;
+				++dbgCasRetryCount;
 				//dbgLog(0x112, 0);
 			}
 		}
@@ -354,11 +381,13 @@ class EntranceReactorHandle : public CasReactorHandle<EntranceReactorData> {
 				new_data.setLastIDToWrite(newLastW);
 				bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
 				if (ok) {
+					++dbgCasOkCount;
 					last_read.data = new_data.data;
 					return lockedCount > 0;
 				}
 				//else
 				//	continue;
+				++dbgCasRetryCount;
 			}//while(true)
 		}
 #endif
@@ -409,7 +438,9 @@ class ExitReactorData {
 	}
 };
 
+#ifndef DUMMY
 static_assert( sizeof(ExitReactorData) == CAS_SIZE, "size of ReactorData MUST match CAS_SIZE" );
+#endif
 
 class ExitReactorHandle {
 	private:
@@ -640,8 +671,12 @@ private:
 };
 
 //*** MWSRQueue ***//
-//std::atomic<int> dbgPushCount = { 0 };
-//std::atomic<int> dbgPopCount = { 0 };
+
+std::atomic<size_t> dbgPushUnlockedCount = {0};
+std::atomic<size_t> dbgPushLockedCount = {0};
+std::atomic<size_t> dbgPopUnlockedCount = {0};
+std::atomic<size_t> dbgPopLockedCount = {0};
+
 
 template<class QueueItem>
 class MWSRQueue {
@@ -662,8 +697,12 @@ class MWSRQueue {
 		EntranceReactorHandle ent(entrance);
 		std::pair<bool,uint64_t> ok_id = ent.allocateNextID();
 		if(ok_id.first) {
+			++dbgPushLockedCount;
 			lockedWriters.lockAndWait(ok_id.second);
 			ent.unlock();
+		}
+		else {
+			++dbgPushUnlockedCount;
 		}
 		size_t idx = index(ok_id.second);
 		items[idx] = std::move(item);
@@ -678,9 +717,13 @@ class MWSRQueue {
 			ExitReactorHandle ex(exit);
 			std::pair<bool,uint64_t> ok_id = ex.startRead();
 			if( !ok_id.first ) {
+				++dbgPopLockedCount;
 				lockedReader.lockAndWait();
 				//unlocking ex is done by ex.writeCompleted()
 				continue;//while(true)
+			}
+			else {
+				++dbgPopUnlockedCount;
 			}
 		
 			uint64_t id = ok_id.second;
