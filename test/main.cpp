@@ -17,14 +17,14 @@ struct QueueItem {
 
 MWSRQueue<QueueItem> q;
 
-#define NWR 8
+#define NWR 100
 #define NITER 1000000
 #define PRINTEVERY 10000
 
 void pusher(int id) {
 	for (int i = 0; i<NITER; ++i) {
 		if (i%PRINTEVERY == 0)
-			printf("%d: push(%d)\n", id, i);
+			printf("th=%d: push(%d)\n", id, i);
 		QueueItem qi(id,i);
 		q.push(std::move(qi));
 	}
@@ -52,7 +52,7 @@ int main() {
 	for (int i = 0; i<NITER*NWR; ++i) {
 		QueueItem qq = q.pop();
 		if (i%PRINTEVERY == 0)
-			printf("%d pop(): %d\n", i, qq.i);
+			printf("%d pop(): %d (th=%d)\n", i, qq.i, qq.th);
 		if (lastValue[qq.th] + 1 != qq.i)
 			throw std::exception();
 		++lastValue[qq.th];
