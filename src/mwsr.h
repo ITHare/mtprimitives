@@ -2,7 +2,6 @@
 #define ithare_mtprimitives_queues_h_included
 
 #include <inttypes.h>
-#include <string.h>
 #include <utility>
 #include <atomic>
 #include <condition_variable>

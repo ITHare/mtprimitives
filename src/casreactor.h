@@ -1,6 +1,7 @@
 #ifndef ithare_mtprimitives_casreactor_h_included
 #define ithare_mtprimitives_casreactor_h_included
 
+#include <cstring>
 #include <atomic>
 #include "mtcommon.h"
 
@@ -93,7 +94,9 @@ namespace ithare {
 
 					bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
 					if (ok) {
+#ifdef ITHARE_MTPRIMITIVES_STATCOUNTS
 						++mtDbgCasOkCount;
+#endif
 						last_read.data = new_data.data;
 						return;//effectively returning ret
 					}

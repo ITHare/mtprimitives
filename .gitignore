@@ -9,4 +9,4 @@
 /test/MSVC/Release
 /test/MSVC/dbgLog.txt
 /test/Clang/mwsr
-/test/Clang/test/Clang/dbgLog.txt
+/test/Clang/dbgLog.txt
