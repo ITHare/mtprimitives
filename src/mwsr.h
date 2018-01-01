@@ -6,6 +6,10 @@
 #include <condition_variable>
 #include <set>//dbg-only
 
+#define GENERIC_CAS_HANDLE
+//  Jury is still out whether generic approach is better 
+//    performance-wise they SEEM to be equal at least under MSVC, and readability-wise I'm _leaning_ towards GENERIC_CAS_HANDLE, but...
+
 inline void my_assert_fail() {//to put a breakpoint
 	throw std::exception();
 }
@@ -86,6 +90,9 @@ class CAS {
 //*** mask_*() functions need to represent a coherent view, but nobody really cares about exact bit numbers outside of them ***//
 
 constexpr size_t QueueSize = 64;// SHOULD be power of 2 for performance reasons
+static_assert(is_powerof2(QueueSize), "QueueSize MUST be power of 2");//probably should work even if this is violated, 
+																	  //  but will be less efficient
+
 
 bool mask_getbit(uint64_t mask,int pos) {
 	assert( pos >= 0 );
@@ -109,6 +116,46 @@ uint64_t mask_shiftoutbit0(uint64_t mask) {
 	return mask >> 1;
 }
 
+//*** Generic CasReactorHandle ***//
+
+template<class ReactorData>
+class CasReactorHandle {
+protected:
+	CAS * cas;
+	ReactorData last_read;
+
+	CasReactorHandle(CAS& cas_)
+		: cas(&cas_) {
+		last_read.data = cas->load();
+	}
+	template<class ReturnType, class Func>
+	void react_of_void(ReturnType& ret, Func&&f) {//ugly; wish I could derive both ReturnType and param types from Func() itself
+		while (true) {
+			ReactorData new_data = last_read;
+			ret = f(new_data);//MODIFIES new_data(!)
+
+			bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
+			if (ok) {
+				last_read.data = new_data.data;
+				return;//effectively returning ret
+			}
+		}
+	}
+	template<class ReturnType, class Func>
+	void react_of_uint64_t(ReturnType& ret, uint64_t param, Func&&f) {//ugly; wish I could derive both ReturnType and param types from Func() itself
+		while (true) {
+			ReactorData new_data = last_read;
+			ret = f(new_data,param);//MODIFIES new_data(!)
+
+			bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
+			if (ok) {
+				last_read.data = new_data.data;
+				return;//effectively returning ret
+			}
+		}
+	}
+};
+
 //*** EntranceReactor and ExitReactor ***//
 
 struct EntranceReactorData {
@@ -131,7 +178,8 @@ struct EntranceReactorData {
 	}
 
 	friend class EntranceReactorHandle;
-	private:
+	friend class CasReactorHandle<EntranceReactorData>;
+private:
 		uint64_t getFirstIDToWrite() const {
 			return data.lo;
 		}
@@ -180,16 +228,68 @@ struct EntranceReactorData {
 
 static_assert( sizeof(EntranceReactorData) == CAS_SIZE, "size of ReactorData MUST match CAS_SIZE" );
 
-class EntranceReactorHandle {
-	private:
-	CAS* cas;
-	EntranceReactorData last_read;
+class EntranceReactorHandle : public CasReactorHandle<EntranceReactorData> {
+	//private:
+	//CAS* cas;
+	//EntranceReactorData last_read;
 
 	public:
 		EntranceReactorHandle( CAS& cas_ ) 
-		: cas( &cas_ ) {
-			last_read.data = cas->load(); 
+		: CasReactorHandle<EntranceReactorData>( cas_ ) {
 		}
+#ifdef GENERIC_CAS_HANDLE
+		std::pair<bool, uint64_t> allocateNextID() {
+			std::pair<bool, uint64_t> ret;
+			react_of_void(ret, [](EntranceReactorData& new_data) -> std::pair<bool, uint64_t> {
+				uint64_t firstW = new_data.getFirstIDToWrite();
+				//MAY be >= lastIDToWrite()
+
+				//regardless of ID being available, we'll try to increment 
+				//	(but if our ID is not available for processing yet - we'll ask to lock)
+				uint64_t newW = firstW + 1;
+				assert(newW > firstW);//overflow check
+				new_data.setFirstIDToWrite(newW);
+
+				bool willLock = false;
+				if (newW >= new_data.getLastIDToWrite()) {
+					willLock = true;
+					uint32_t lockedCount = new_data.getLockedThreadCount();
+					//dbgLog(0x101, lockedCount);
+					uint32_t newLockedCount = lockedCount + 1;
+					assert(newLockedCount > lockedCount);//overflow check
+					new_data.setLockedThreadCount(newLockedCount);
+				}//if(newW >= ...)
+
+				return std::pair<bool, uint64_t>(willLock, firstW);
+			});
+			return ret;
+		}
+		void unlock() {
+			int dummy;
+			react_of_void(dummy, [](EntranceReactorData& new_data) {
+				uint32_t lockedCount = new_data.getLockedThreadCount();
+				uint32_t newLockedCount = lockedCount - 1;
+				//dbgLog(0x111, lockedCount);
+				assert(newLockedCount < lockedCount);//underflow check
+				new_data.setLockedThreadCount(newLockedCount);
+				return 0;//dummy
+			});
+		}
+		bool moveLastToWrite(uint64_t newLastW) {
+			//returns 'shouldUnlock'
+			bool ret;
+			react_of_uint64_t(ret, newLastW, [](EntranceReactorData& new_data,uint64_t newLastW) -> bool {
+				uint64_t lastW = new_data.getLastIDToWrite();
+				assert(lastW <= newLastW);
+
+				uint32_t lockedCount = new_data.getLockedThreadCount();
+
+				new_data.setLastIDToWrite(newLastW);
+				return lockedCount > 0;
+			});
+			return ret;
+		}
+#else
 		std::pair<bool,uint64_t> allocateNextID() {
 			//returns tuple (shouldLock,newID); newID is returned regardless of shouldLock
 			while(true) {
@@ -242,17 +342,17 @@ class EntranceReactorHandle {
 				//dbgLog(0x112, 0);
 			}
 		}
-		bool moveLastToWrite( uint64_t newLastW ) {
+		bool moveLastToWrite(uint64_t newLastW) {
 			//returns 'shouldUnlock'
-			while(true) {
+			while (true) {
 				EntranceReactorData new_data = last_read;
 				uint64_t lastW = new_data.getLastIDToWrite();
-				assert( lastW <= newLastW );
+				assert(lastW <= newLastW);
 
 				uint32_t lockedCount = new_data.getLockedThreadCount();
 
-				new_data.setLastIDToWrite( newLastW );
-				bool ok = cas->compare_exchange_weak( &last_read.data, new_data.data );
+				new_data.setLastIDToWrite(newLastW);
+				bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
 				if (ok) {
 					last_read.data = new_data.data;
 					return lockedCount > 0;
@@ -261,6 +361,7 @@ class EntranceReactorHandle {
 				//	continue;
 			}//while(true)
 		}
+#endif
 	};
 
 class ExitReactorData {

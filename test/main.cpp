@@ -1,9 +1,22 @@
 ﻿#include <stdio.h>//NOT std::cout as it behaves weird in MT
 #include <thread>
+#include <chrono>
 #include "../src/mwsr.h"
 
-static_assert(is_powerof2(QueueSize), "QueueSize MUST be power of 2");//probably should work even if this is violated, 
-																	  //  but will be less efficient
+class Benchmark {
+	std::chrono::high_resolution_clock::time_point start;
+
+public:
+	Benchmark() {
+		start = std::chrono::high_resolution_clock::now();
+	}
+	int32_t us() {
+		auto stop = std::chrono::high_resolution_clock::now();
+		auto length = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+		return (int32_t)length.count();
+	}
+};
+
 struct QueueItem {
 	int th;
 	int i;
@@ -17,9 +30,9 @@ struct QueueItem {
 
 MWSRQueue<QueueItem> q;
 
-#define NWR 100
+#define NWR 4
 #define NITER 1000000
-#define PRINTEVERY 10000
+#define PRINTEVERY 1000000
 
 void pusher(int id) {
 	for (int i = 0; i<NITER; ++i) {
@@ -49,6 +62,8 @@ int main() {
 		lastValue[i] = -1;
 		th[i] = std::thread(pusher, i);
 	}
+
+	Benchmark bm;
 	for (int i = 0; i<NITER*NWR; ++i) {
 		QueueItem qq = q.pop();
 		if (i%PRINTEVERY == 0)
@@ -59,7 +74,7 @@ int main() {
 	}
 	for (int i = 0; i < NWR; ++i)
 		th[i].join();
-
+	printf("Took %d microseconds\n", bm.us());
 	//printDbgLog(0);
 	return 0;
 }
