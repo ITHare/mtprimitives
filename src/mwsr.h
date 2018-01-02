@@ -435,7 +435,7 @@ namespace ithare {
 						//	continue;
 					}//while(true)		
 				}
-				std::pair<bool, uint64_t> startRead() {
+				std::pair<size_t, uint64_t> startRead() {
 					//returns tuple (rdok,rdID)
 					//IMPORTANT: it is HIGHLY DESIRABLE to call startRead() close time-wise to constructor or reread()
 					while (true) {
@@ -443,8 +443,13 @@ namespace ithare {
 						assert(!new_data.getReaderIsLocked());
 						uint64_t mask = new_data.getCompletedWritesMask();
 
-						if (mask_getbit(mask, 0))
-							return std::pair<bool, uint64_t>(true, new_data.getFirstIDToRead());//yes, leaving without modifying state
+						if (mask_getbit(mask, 0)) {
+							int n = 1;
+							for (; n < QueueSize; ++n)
+								if (!mask_getbit(mask, n))
+									break;
+							return std::pair<size_t, uint64_t>(n, new_data.getFirstIDToRead());//yes, leaving without modifying state
+						}
 						else {
 							new_data.setReaderIsLocked();
 						}
@@ -452,25 +457,28 @@ namespace ithare {
 						bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
 						if (ok) {
 							last_read.data = new_data.data;
-							return std::pair<bool, uint64_t>(false, 0);
+							return std::pair<size_t, uint64_t>(0, 0);
 						}
 						//else
 						//	continue;
 					}
 				}
-				uint64_t readCompleted(uint64_t id) {
+				uint64_t readCompleted(size_t sz, uint64_t id) {
 					//returns newLastW
+					assert(sz <= QueueSize);
 					while (true) {
 						ExitReactorData new_data = last_read;
 						uint64_t mask = new_data.getCompletedWritesMask();
 						assert(mask_getbit(mask, 0));
 
 						uint64_t firstR = new_data.getFirstIDToRead();
-						uint64_t newFirstR = firstR + 1;
+						uint64_t newFirstR = firstR + sz;
 						assert(newFirstR > firstR);//overflow check
 						new_data.setFirstIDToRead(newFirstR);
 
-						uint64_t newMask = mask_shiftoutbit0(mask);
+						uint64_t newMask = mask;
+						for (size_t i = 0; i < sz; ++i)//TODO: optimize
+							newMask = mask_shiftoutbit0(newMask);
 						new_data.setCompletedWritesMask(newMask);
 						uint64_t newLastW = newFirstR + QueueSize;
 
