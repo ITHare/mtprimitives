@@ -634,9 +634,9 @@ namespace ithare {
 			MWSRQueueFC_helpers::LockedSingleThread lockedReader;
 			
 			//'already read' kinda-cache
-			QueueItem rdItems[QueueSize - 1];
-			size_t rdBegin = 0;
-			size_t rdEnd = 0;
+			QueueItem rdCache[QueueSize - 1];
+			size_t rdCacheBegin = 0;
+			size_t rdCacheEnd = 0;
 
 		public:
 			MWSRQueueFC()
@@ -667,10 +667,10 @@ namespace ithare {
 					lockedReader.unlock();
 			}
 			QueueItem pop() {
-				if (rdBegin < rdEnd) {
-					return std::move(rdItems[rdBegin++]);
+				if (rdCacheBegin < rdCacheEnd) {
+					return std::move(rdCache[rdCacheBegin++]);
 				}
-				assert(rdBegin == rdEnd);
+				assert(rdCacheBegin == rdCacheEnd);
 				while (true) {
 					MWSRQueueFC_helpers::ExitReactorHandle ex(exit);
 					std::pair<size_t, uint64_t> sz_id = ex.startRead();
@@ -694,12 +694,12 @@ namespace ithare {
 					uint64_t id = sz_id.second;
 					size_t idx = index(id);
 					QueueItem ret = std::move(items[idx]);
-					assert(rdBegin == rdEnd);
-					rdBegin = rdEnd = 0;
+					assert(rdCacheBegin == rdCacheEnd);
+					rdCacheBegin = rdCacheEnd = 0;
 					for (size_t i = 1; i < sz; ++i) {
-						rdItems[rdEnd++] = std::move(items[index(id + i)]);
+						rdCache[rdCacheEnd++] = std::move(items[index(id + i)]);
 					}
-					assert(rdEnd < QueueSize - 1);
+					assert(rdCacheEnd < QueueSize - 1);
 
 					uint64_t newLastW = ex.readCompleted(sz,id);
 
