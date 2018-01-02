@@ -36,11 +36,11 @@ namespace ithare {
 				return mask | (uint64_t(1) << pos);
 			}
 
-			bool mask_resetbit(uint64_t mask, int pos) {
+			/*bool mask_resetbit(uint64_t mask, int pos) {
 				assert(pos >= 0);
 				assert(pos < 64);
 				return mask & ~(uint64_t(1) << pos);
-			}
+			}*/
 
 			uint64_t mask_shiftoutbit0(uint64_t mask) {
 				return mask >> 1;
@@ -360,37 +360,45 @@ namespace ithare {
 					});
 					return ret0;
 				}
-				std::pair<bool, uint64_t> startRead() {
-					std::pair<bool, uint64_t> ret;
-					react_of_void(ret, [](bool& earlyExit, ExitReactorData& new_data) -> std::pair<bool, uint64_t> {
+				std::pair<size_t, uint64_t> startRead() {
+					//first == 0 means 'nothing to read'
+					std::pair<size_t, uint64_t> ret;
+					react_of_void(ret, [](bool& earlyExit, ExitReactorData& new_data) -> std::pair<size_t, uint64_t> {
 						assert(!new_data.getReaderIsLocked());
 						uint64_t mask = new_data.getCompletedWritesMask();
 
 						if (mask_getbit(mask, 0)) {
 							earlyExit = true;//yes, leaving without modifying state
-							return std::pair<bool, uint64_t>(true, new_data.getFirstIDToRead());
+							int n = 1;
+							for (; n < QueueSize; ++n)
+								if (!mask_getbit(mask, n))
+									break;
+							return std::pair<size_t, uint64_t>(n, new_data.getFirstIDToRead());
 						}
 						else {
 							new_data.setReaderIsLocked();
 						}
 
-						return std::pair<bool, uint64_t>(false, 0);
+						return std::pair<size_t, uint64_t>(0, 0);
 					});
 					return ret;
 				}
-				uint64_t readCompleted(uint64_t id) {
+				uint64_t readCompleted(size_t sz,uint64_t id) {
+					assert(sz <= QueueSize);
 					uint64_t ret0;
-					react_of_uint64_t(ret0, id, [](bool& earlyExit, ExitReactorData& new_data, uint64_t id) -> uint64_t {
+					react_of_uint64_t_uint64_t(ret0, sz, id, [](bool& earlyExit, ExitReactorData& new_data, uint64_t sz, uint64_t id) -> uint64_t {
 						//returns newLastW
 						uint64_t mask = new_data.getCompletedWritesMask();
 						assert(mask_getbit(mask, 0));
 
 						uint64_t firstR = new_data.getFirstIDToRead();
-						uint64_t newFirstR = firstR + 1;
+						uint64_t newFirstR = firstR + sz;
 						assert(newFirstR > firstR);//overflow check
 						new_data.setFirstIDToRead(newFirstR);
 
-						uint64_t newMask = mask_shiftoutbit0(mask);
+						uint64_t newMask = mask;
+						for (size_t i = 0; i < sz; ++i)//TODO: optimize
+							newMask = mask_shiftoutbit0(newMask);
 						new_data.setCompletedWritesMask(newMask);
 						uint64_t newLastW = newFirstR + QueueSize;
 
@@ -612,9 +620,8 @@ namespace ithare {
 		}//namespace MWSRQueueFC_helpers
 
 		//*** MWSRQueueFC ***//
-
 		template<class QueueItem>
-		class MWSRQueueFC {//'FC' stands for 'Flow Control'
+		class MWSRQueueFC {//'FC' stands for 'Flow Control'; TODO: rename into QueueMWSRDemandBlockingFlowControl
 			static constexpr size_t QueueSize = MWSRQueueFC_helpers::QueueSize;
 			static_assert(mt_is_powerof2(QueueSize), "QueueSize MUST be power of 2");//probably should work even if this is violated, 
 																					 //  but will be less efficient
@@ -625,6 +632,11 @@ namespace ithare {
 			MWSRQueueFC_helpers::LockedThreadsList lockedWriters;
 			MT_CAS exit;
 			MWSRQueueFC_helpers::LockedSingleThread lockedReader;
+			
+			//'already read' kinda-cache
+			QueueItem rdItems[QueueSize - 1];
+			size_t rdBegin = 0;
+			size_t rdEnd = 0;
 
 		public:
 			MWSRQueueFC()
@@ -655,10 +667,16 @@ namespace ithare {
 					lockedReader.unlock();
 			}
 			QueueItem pop() {
+				if (rdBegin < rdEnd) {
+					return std::move(rdItems[rdBegin++]);
+				}
+				assert(rdBegin == rdEnd);
 				while (true) {
 					MWSRQueueFC_helpers::ExitReactorHandle ex(exit);
-					std::pair<bool, uint64_t> ok_id = ex.startRead();
-					if (!ok_id.first) {
+					std::pair<size_t, uint64_t> sz_id = ex.startRead();
+					size_t sz = sz_id.first;
+					assert(sz <= QueueSize);
+					if (!sz) {
 #ifdef ITHARE_MTPRIMITIVES_STATCOUNTS
 						++dbgPopLockedCount;
 #endif
@@ -670,17 +688,25 @@ namespace ithare {
 #ifdef ITHARE_MTPRIMITIVES_STATCOUNTS
 						++dbgPopUnlockedCount;
 #endif
+
 					}
 
-					uint64_t id = ok_id.second;
+					uint64_t id = sz_id.second;
 					size_t idx = index(id);
 					QueueItem ret = std::move(items[idx]);
-					uint64_t newLastW = ex.readCompleted(id);
+					assert(rdBegin == rdEnd);
+					rdBegin = rdEnd = 0;
+					for (size_t i = 1; i < sz; ++i) {
+						rdItems[rdEnd++] = std::move(items[index(id + i)]);
+					}
+					assert(rdEnd < QueueSize - 1);
+
+					uint64_t newLastW = ex.readCompleted(sz,id);
 
 					MWSRQueueFC_helpers::EntranceReactorHandle ent(entrance);
 					bool shouldUnlock = ent.moveLastToWrite(newLastW);
 					if (shouldUnlock)
-						lockedWriters.unlockAllUpTo(id + QueueSize);
+						lockedWriters.unlockAllUpTo(id + sz - 1 +QueueSize);
 
 					//std::cout << "pop():" << re	t.value() << std::endl;
 					return ret;

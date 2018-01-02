@@ -109,6 +109,27 @@ namespace ithare {
 #endif
 				}
 			}
+			template<class ReturnType, class Func>
+			void react_of_uint64_t_uint64_t(ReturnType& ret, uint64_t param, uint64_t param2, Func&&f) {//ugly; wish I could derive both ReturnType and param types from Func() itself
+				while (true) {
+					ReactorData new_data = last_read;
+					bool earlyExit = false;
+					ret = f(earlyExit, new_data, param, param2);//MODIFIES new_data(!)
+					if (earlyExit)
+						return;
+					bool ok = cas->compare_exchange_weak(&last_read.data, new_data.data);
+					if (ok) {
+#ifdef ITHARE_MTPRIMITIVES_STATCOUNTS
+						++mtDbgCasOkCount;
+#endif
+						last_read.data = new_data.data;
+						return;//effectively returning ret
+					}
+#ifdef ITHARE_MTPRIMITIVES_STATCOUNTS
+					++mtDbgCasRetryCount;
+#endif
+				}
+			}
 		};
 
 	}//namespace mtprimitives
